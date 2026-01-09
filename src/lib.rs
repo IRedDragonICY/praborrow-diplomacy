@@ -1,5 +1,7 @@
-// Praborrow Diplomacy
-// FFI Stubs for international relations (Foreign Functions).
+//! FFI bindings for cross-language integration.
+//!
+//! Provides C-compatible functions for establishing inter-process communication
+//! with non-Rust systems.
 
 #[unsafe(no_mangle)]
 pub extern "C" fn establish_relations() {
