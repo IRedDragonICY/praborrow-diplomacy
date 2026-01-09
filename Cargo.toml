@@ -2,5 +2,13 @@
 name = "praborrow-diplomacy"
 version = "0.1.0"
 edition = "2021"
+authors = ["ireddragonicy"]
+description = "FFI stubs for interoperability with external systems. Facilitates cross-language integration with the Sovereign memory model."
+license = "MIT"
+repository = "https://github.com/ireddragonicy/praborrow-diplomacy"
+documentation = "https://docs.rs/praborrow-diplomacy"
+readme = "README.md"
+keywords = ["ffi", "interop", "c-api", "bindings"]
+categories = ["api-bindings", "external-ffi-bindings"]
 
 [dependencies]
