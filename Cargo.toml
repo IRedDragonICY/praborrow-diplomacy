@@ -10,5 +10,4 @@ keywords = ["ffi", "interop", "c-api", "bindings"]
 categories = ["api-bindings", "external-ffi-bindings"]
 
 [dependencies]
-tracing = "0.1"
-
+tracing = { workspace = true }
