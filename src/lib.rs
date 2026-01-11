@@ -35,25 +35,26 @@
 //! #endif // PRABORROW_H
 //! ```
 
+use crossbeam_queue::SegQueue;
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_int};
-use std::sync::{Mutex, OnceLock};
+use std::sync::OnceLock;
 
 /// Global registry for diplomatic state.
 struct GlobalRegistry {
     /// Envoys received from the foreign jurisdiction, waiting to be processed by Rust.
     /// (Note: In a real system, this might be a channel receiver)
-    incoming_envoys: Mutex<Vec<String>>,
+    incoming_envoys: SegQueue<String>,
     /// Envoys waiting to be sent to the foreign jurisdiction (outbox).
     /// For this FFI demo, we use this to store messages FROM Rust TO C.
-    outbox: Mutex<Vec<String>>,
+    outbox: SegQueue<String>,
 }
 
 impl GlobalRegistry {
     fn new() -> Self {
         Self {
-            incoming_envoys: Mutex::new(Vec::new()),
-            outbox: Mutex::new(Vec::new()),
+            incoming_envoys: SegQueue::new(),
+            outbox: SegQueue::new(),
         }
     }
 }
@@ -138,14 +139,10 @@ pub unsafe extern "C" fn send_envoy(id: u32, payload: *const c_char) -> c_int {
     // Let's store it in `incoming_envoys` for Rust to read (internally)
     // AND echo a response to `outbox` for C to read.
     
-    if let Ok(mut incoming) = registry.incoming_envoys.lock() {
-        incoming.push(format!("ID:{}:{}", id, r_str));
-    }
+    registry.incoming_envoys.push(format!("ID:{}:{}", id, r_str));
     
     // Auto-reply for testing
-    if let Ok(mut outbox) = registry.outbox.lock() {
-        outbox.push(format!("Ack: {}", r_str));
-    }
+    registry.outbox.push(format!("Ack: {}", r_str));
 
     0
 }
@@ -164,11 +161,7 @@ pub extern "C" fn receive_envoy() -> *mut c_char {
         None => return std::ptr::null_mut(),
     };
 
-    let msg = if let Ok(mut outbox) = registry.outbox.lock() {
-        outbox.pop()
-    } else {
-        None
-    };
+    let msg = registry.outbox.pop();
 
     match msg {
         Some(s) => {
