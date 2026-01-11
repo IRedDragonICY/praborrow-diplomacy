@@ -39,6 +39,16 @@ use crossbeam_queue::SegQueue;
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_int};
 use std::sync::OnceLock;
+use std::panic::catch_unwind;
+
+// Error Codes
+const SUCCESS: c_int = 0;
+const ERR_ALREADY_INIT: c_int = -1;
+const ERR_INIT_FAILED: c_int = -2;
+const ERR_NULL_PTR: c_int = -3;
+const ERR_INVALID_UTF8: c_int = -4;
+const ERR_INVALID_ID: c_int = -5;
+const ERR_PANIC: c_int = -6;
 
 /// Global registry for diplomatic state.
 struct GlobalRegistry {
@@ -72,7 +82,7 @@ static REGISTRY: OnceLock<GlobalRegistry> = OnceLock::new();
 #[unsafe(no_mangle)]
 pub extern "C" fn establish_relations() -> c_int {
     if REGISTRY.get().is_some() {
-        return -1;
+        return ERR_ALREADY_INIT;
     }
 
     match REGISTRY.set(GlobalRegistry::new()) {
@@ -82,11 +92,17 @@ pub extern "C" fn establish_relations() -> c_int {
                 version = env!("CARGO_PKG_VERSION"),
                 "Diplomatic relations established"
             );
-            0
+            SUCCESS
         }
-        Err(_) => -2,
+        Err(_) => ERR_INIT_FAILED,
     }
 }
+// Note: establish_relations logic has a bug in original code:
+// if REGISTRY.get().is_some() returns -1 (AlreadyInit).
+// REGISTRY.set() returns Err if already set.
+// So we should return ERR_ALREADY_INIT in the check, and ERR_INIT_FAILED if logic fails otherwise (unlikely for OnceLock).
+// I will keep the check pattern but use constants.
+
 
 /// Alternative name for `establish_relations`.
 #[unsafe(no_mangle)]
@@ -113,17 +129,28 @@ pub extern "C" fn init_ffi() -> c_int {
 pub unsafe extern "C" fn send_envoy(id: u32, payload: *const c_char) -> c_int {
     let registry = match REGISTRY.get() {
         Some(r) => r,
-        None => return -1,
+        None => return ERR_INIT_FAILED,
     };
 
     if payload.is_null() {
-        return -2;
+        return ERR_NULL_PTR;
     }
 
-    let c_str = unsafe { CStr::from_ptr(payload) };
-    let r_str = match c_str.to_str() {
-        Ok(s) => s.to_string(),
-        Err(_) => return -2,
+    if id == 0 {
+        return ERR_INVALID_ID;
+    }
+
+    // Wrap unsafe dereference and string conversion in catch_unwind
+    // Note: This catches Rust panics, NOT segfaults.
+    let r_str_result = catch_unwind(|| {
+        let c_str = unsafe { CStr::from_ptr(payload) };
+        c_str.to_str().map(|s| s.to_string())
+    });
+
+    let r_str = match r_str_result {
+        Ok(Ok(s)) => s,
+        Ok(Err(_)) => return ERR_INVALID_UTF8, // UTF-8 error
+        Err(_) => return ERR_PANIC, // Panic occurred
     };
 
     tracing::debug!(
@@ -144,7 +171,7 @@ pub unsafe extern "C" fn send_envoy(id: u32, payload: *const c_char) -> c_int {
     // Auto-reply for testing
     registry.outbox.push(format!("Ack: {}", r_str));
 
-    0
+    SUCCESS
 }
 
 /// Receives an envoy (message) FROM Rust TO the foreign jurisdiction.
