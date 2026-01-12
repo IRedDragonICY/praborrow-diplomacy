@@ -1,0 +1,13 @@
+language = "C"
+
+[parse]
+parse_deps = true
+include = ["praborrow-diplomacy"]
+
+[export]
+include = ["establish_relations", "init_ffi", "send_envoy", "receive_envoy", "free_envoy", "praborrow_version"]
+item_types = ["functions"]
+
+[fn]
+args = "auto"
+rename_args = "Auto"

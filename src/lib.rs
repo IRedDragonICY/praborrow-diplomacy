@@ -38,11 +38,13 @@
 use crossbeam_queue::SegQueue;
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_int};
-use std::sync::OnceLock;
 use std::panic::catch_unwind;
+use std::sync::OnceLock;
 
 // Error Codes
 const SUCCESS: c_int = 0;
+
+pub mod safe;
 const ERR_ALREADY_INIT: c_int = -1;
 const ERR_INIT_FAILED: c_int = -2;
 const ERR_NULL_PTR: c_int = -3;
@@ -51,17 +53,19 @@ const ERR_INVALID_ID: c_int = -5;
 const ERR_PANIC: c_int = -6;
 
 /// Global registry for diplomatic state.
-struct GlobalRegistry {
+pub(crate) struct GlobalRegistry {
     /// Envoys received from the foreign jurisdiction, waiting to be processed by Rust.
     /// (Note: In a real system, this might be a channel receiver)
-    incoming_envoys: SegQueue<String>,
+    /// Envoys received from the foreign jurisdiction, waiting to be processed by Rust.
+    /// (Note: In a real system, this might be a channel receiver)
+    pub(crate) incoming_envoys: SegQueue<String>,
     /// Envoys waiting to be sent to the foreign jurisdiction (outbox).
     /// For this FFI demo, we use this to store messages FROM Rust TO C.
-    outbox: SegQueue<String>,
+    pub(crate) outbox: SegQueue<String>,
 }
 
 impl GlobalRegistry {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             incoming_envoys: SegQueue::new(),
             outbox: SegQueue::new(),
@@ -69,7 +73,7 @@ impl GlobalRegistry {
     }
 }
 
-static REGISTRY: OnceLock<GlobalRegistry> = OnceLock::new();
+pub(crate) static REGISTRY: OnceLock<GlobalRegistry> = OnceLock::new();
 
 /// Establishes diplomatic relations with the PraBorrow runtime.
 ///
@@ -102,7 +106,6 @@ pub extern "C" fn establish_relations() -> c_int {
 // REGISTRY.set() returns Err if already set.
 // So we should return ERR_ALREADY_INIT in the check, and ERR_INIT_FAILED if logic fails otherwise (unlikely for OnceLock).
 // I will keep the check pattern but use constants.
-
 
 /// Alternative name for `establish_relations`.
 #[unsafe(no_mangle)]
@@ -150,7 +153,7 @@ pub unsafe extern "C" fn send_envoy(id: u32, payload: *const c_char) -> c_int {
     let r_str = match r_str_result {
         Ok(Ok(s)) => s,
         Ok(Err(_)) => return ERR_INVALID_UTF8, // UTF-8 error
-        Err(_) => return ERR_PANIC, // Panic occurred
+        Err(_) => return ERR_PANIC,            // Panic occurred
     };
 
     tracing::debug!(
@@ -165,9 +168,11 @@ pub unsafe extern "C" fn send_envoy(id: u32, payload: *const c_char) -> c_int {
     // or store it in the outbox so C can read it back?
     // Let's store it in `incoming_envoys` for Rust to read (internally)
     // AND echo a response to `outbox` for C to read.
-    
-    registry.incoming_envoys.push(format!("ID:{}:{}", id, r_str));
-    
+
+    registry
+        .incoming_envoys
+        .push(format!("ID:{}:{}", id, r_str));
+
     // Auto-reply for testing
     registry.outbox.push(format!("Ack: {}", r_str));
 
@@ -191,12 +196,10 @@ pub extern "C" fn receive_envoy() -> *mut c_char {
     let msg = registry.outbox.pop();
 
     match msg {
-        Some(s) => {
-            match CString::new(s) {
-                Ok(c_str) => c_str.into_raw(),
-                Err(_) => std::ptr::null_mut(),
-            }
-        }
+        Some(s) => match CString::new(s) {
+            Ok(c_str) => c_str.into_raw(),
+            Err(_) => std::ptr::null_mut(),
+        },
         None => std::ptr::null_mut(),
     }
 }
@@ -249,7 +252,7 @@ mod tests {
 
         // 4. Free envoy
         unsafe { free_envoy(received_ptr) };
-        
+
         // 5. Receive empty
         let empty = receive_envoy();
         assert!(empty.is_null());

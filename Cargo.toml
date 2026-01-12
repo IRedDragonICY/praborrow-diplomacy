@@ -12,3 +12,4 @@ categories = ["api-bindings", "external-ffi-bindings"]
 [dependencies]
 tracing = { workspace = true }
 crossbeam-queue = "0.3"
+thiserror = { workspace = true }
