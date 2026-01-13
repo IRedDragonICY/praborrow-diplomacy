@@ -103,6 +103,7 @@ pub(crate) static REGISTRY: OnceLock<GlobalRegistry> = OnceLock::new();
 /// * `-1` - Already initialized
 /// * `-2` - Initialization failed
 #[unsafe(no_mangle)]
+#[tracing::instrument]
 pub extern "C" fn establish_relations() -> c_int {
     if REGISTRY.get().is_some() {
         return ERR_ALREADY_INIT;
@@ -151,11 +152,14 @@ pub extern "C" fn init_ffi() -> c_int {
 /// * `payload` must be a valid pointer to a null-terminated C string.
 /// * The memory pointed to by `payload` must remain valid for the duration of the call.
 #[unsafe(no_mangle)]
+#[tracing::instrument(skip(payload))]
 pub unsafe extern "C" fn send_envoy(id: u32, payload: *const c_char) -> c_int {
     let registry = match REGISTRY.get() {
         Some(r) => r,
         None => return ERR_INIT_FAILED,
     };
+    // ...
+
 
     if payload.is_null() {
         tracing::error!("Received NULL payload");
@@ -240,6 +244,7 @@ pub unsafe extern "C" fn send_envoy(id: u32, payload: *const c_char) -> c_int {
 /// * `char*` - Pointer to null-terminated string. Ownership transferred to caller.
 /// * `NULL` - No messages available or error.
 #[unsafe(no_mangle)]
+#[tracing::instrument]
 pub extern "C" fn receive_envoy() -> *mut c_char {
     let registry = match REGISTRY.get() {
         Some(r) => r,
