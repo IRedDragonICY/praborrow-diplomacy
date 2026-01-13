@@ -160,7 +160,6 @@ pub unsafe extern "C" fn send_envoy(id: u32, payload: *const c_char) -> c_int {
     };
     // ...
 
-
     if payload.is_null() {
         tracing::error!("Received NULL payload");
         return ERR_NULL_PTR;
