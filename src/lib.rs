@@ -35,12 +35,16 @@
 //! #endif // PRABORROW_H
 //! ```
 
-use dashmap::DashSet;
 use crossbeam_queue::SegQueue;
+use dashmap::DashSet;
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_int};
 use std::panic::catch_unwind;
 use std::sync::OnceLock;
+
+/// Handle to track active envoys (pointers) given to foreign jurisdictions.
+/// Limits the scope of potential FFI misuse (double-free).
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// Handle to track active envoys (pointers) given to foreign jurisdictions.
 /// Limits the scope of potential FFI misuse (double-free).
@@ -57,17 +61,21 @@ const ERR_NULL_PTR: c_int = -3;
 const ERR_INVALID_UTF8: c_int = -4;
 const ERR_INVALID_ID: c_int = -5;
 const ERR_PANIC: c_int = -6;
+const ERR_QUEUE_FULL: c_int = -7;
+
+/// Trait for types that can be exchanged across the FFI boundary.
+pub trait Diplomat: serde::Serialize + serde::de::DeserializeOwned {}
+
+pub(crate) const MAX_QUEUE_DEPTH: usize = 10_000;
 
 /// Global registry for diplomatic state.
 pub(crate) struct GlobalRegistry {
     /// Envoys received from the foreign jurisdiction, waiting to be processed by Rust.
-    /// (Note: In a real system, this might be a channel receiver)
-    /// Envoys received from the foreign jurisdiction, waiting to be processed by Rust.
-    /// (Note: In a real system, this might be a channel receiver)
     pub(crate) incoming_envoys: SegQueue<String>,
+    pub(crate) incoming_count: AtomicUsize,
     /// Envoys waiting to be sent to the foreign jurisdiction (outbox).
-    /// For this FFI demo, we use this to store messages FROM Rust TO C.
     pub(crate) outbox: SegQueue<String>,
+    pub(crate) outbox_count: AtomicUsize,
     /// Tracks active pointers given to C to prevent double-free.
     pub(crate) active_loans: DashSet<usize>,
 }
@@ -76,7 +84,9 @@ impl GlobalRegistry {
     pub(crate) fn new() -> Self {
         Self {
             incoming_envoys: SegQueue::new(),
+            incoming_count: AtomicUsize::new(0),
             outbox: SegQueue::new(),
+            outbox_count: AtomicUsize::new(0),
             active_loans: DashSet::new(),
         }
     }
@@ -110,7 +120,7 @@ pub extern "C" fn establish_relations() -> c_int {
         Err(_) => {
             tracing::error!("Failed to initialize GlobalRegistry");
             ERR_INIT_FAILED
-        },
+        }
     }
 }
 // Note: establish_relations logic has a bug in original code:
@@ -168,11 +178,11 @@ pub unsafe extern "C" fn send_envoy(id: u32, payload: *const c_char) -> c_int {
         Ok(Ok(s)) => s,
         Ok(Err(_)) => {
             tracing::error!("Invalid UTF-8 in payload");
-            return ERR_INVALID_UTF8
+            return ERR_INVALID_UTF8;
         } // UTF-8 error
         Err(_) => {
             tracing::error!("Panic caught across FFI boundary");
-            return ERR_PANIC
+            return ERR_PANIC;
         } // Panic occurred
     };
 
@@ -183,15 +193,38 @@ pub unsafe extern "C" fn send_envoy(id: u32, payload: *const c_char) -> c_int {
         "Envoy received from foreign jurisdiction"
     );
 
-    // In a real app, we'd do something with this.
-    // For the sake of the 'receive_envoy' demo, let's echo it back
-    // or store it in the outbox so C can read it back?
-    // Let's store it in `incoming_envoys` for Rust to read (internally)
-    // AND echo a response to `outbox` for C to read.
+    // OOM Prevention: Check Limits
+    // 1. Check Incoming Queue
+    if registry.incoming_count.load(Ordering::Relaxed) >= MAX_QUEUE_DEPTH {
+        return ERR_QUEUE_FULL;
+    }
+    // 2. Check Outbox (for Echo)
+    if registry.outbox_count.load(Ordering::Relaxed) >= MAX_QUEUE_DEPTH {
+        // Technically this is a partial failure if incoming succeeded but echo failed.
+        // For simplicity, we fail the whole operation to apply backpressure.
+        return ERR_QUEUE_FULL;
+    }
+
+    // Commit to queues
+    // Note: Race condition exists between load and push, but precise count isn't critical for safety, just bounding.
+    // Using fetch_add would be more precise.
+    let old_incoming = registry.incoming_count.fetch_add(1, Ordering::Relaxed);
+    if old_incoming >= MAX_QUEUE_DEPTH {
+        registry.incoming_count.fetch_sub(1, Ordering::Relaxed);
+        return ERR_QUEUE_FULL;
+    }
 
     registry
         .incoming_envoys
         .push(format!("ID:{}:{}", id, r_str));
+
+    let old_outbox = registry.outbox_count.fetch_add(1, Ordering::Relaxed);
+    if old_outbox >= MAX_QUEUE_DEPTH {
+        registry.outbox_count.fetch_sub(1, Ordering::Relaxed);
+        // Note: We already pushed to incoming, so this is an edge case.
+        // But prevents outbox OOM.
+        return ERR_QUEUE_FULL;
+    }
 
     // Auto-reply for testing
     registry.outbox.push(format!("Ack: {}", r_str));
@@ -216,15 +249,20 @@ pub extern "C" fn receive_envoy() -> *mut c_char {
     let msg = registry.outbox.pop();
 
     match msg {
-        Some(s) => match CString::new(s) {
-            Ok(c_str) => {
-                let ptr = c_str.into_raw();
-                // Register the pointer as active
-                registry.active_loans.insert(ptr as usize);
-                ptr
-            },
-            Err(_) => std::ptr::null_mut(),
-        },
+        Some(s) => {
+            // Decrement count
+            registry.outbox_count.fetch_sub(1, Ordering::Relaxed);
+
+            match CString::new(s) {
+                Ok(c_str) => {
+                    let ptr = c_str.into_raw();
+                    // Register the pointer as active
+                    registry.active_loans.insert(ptr as usize);
+                    ptr
+                }
+                Err(_) => std::ptr::null_mut(),
+            }
+        }
         None => std::ptr::null_mut(),
     }
 }

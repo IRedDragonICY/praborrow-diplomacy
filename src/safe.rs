@@ -8,6 +8,8 @@ pub enum DiplomacyError {
     InitFailed,
     #[error("Registry not initialized")]
     NotInitialized,
+    #[error("Queue capacity exceeded")]
+    QueueFull,
 }
 
 /// A safe wrapper for the Diplomatic Relations FFI.
@@ -39,6 +41,19 @@ impl Diplomat {
     /// C-side `receive_envoy` will pop this message.
     pub fn send(id: u32, payload: &str) -> Result<(), DiplomacyError> {
         let registry = REGISTRY.get().ok_or(DiplomacyError::NotInitialized)?;
+
+        // OOM Check
+        if registry
+            .outbox_count
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            >= crate::MAX_QUEUE_DEPTH
+        {
+            registry
+                .outbox_count
+                .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+            return Err(DiplomacyError::QueueFull);
+        }
+
         registry.outbox.push(format!("{}:{}", id, payload));
         Ok(())
     }
@@ -48,6 +63,12 @@ impl Diplomat {
     /// Pops from the internal incoming queue, which is populated by C-side `send_envoy`.
     pub fn receive() -> Option<String> {
         let registry = REGISTRY.get()?;
-        registry.incoming_envoys.pop()
+        let msg = registry.incoming_envoys.pop();
+        if msg.is_some() {
+            registry
+                .incoming_count
+                .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+        }
+        msg
     }
 }
