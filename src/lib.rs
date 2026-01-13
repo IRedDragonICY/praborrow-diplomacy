@@ -35,11 +35,17 @@
 //! #endif // PRABORROW_H
 //! ```
 
+use dashmap::DashSet;
 use crossbeam_queue::SegQueue;
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_int};
 use std::panic::catch_unwind;
 use std::sync::OnceLock;
+
+/// Handle to track active envoys (pointers) given to foreign jurisdictions.
+/// Limits the scope of potential FFI misuse (double-free).
+#[derive(Debug, Hash, PartialEq, Eq, Clone, Copy)]
+pub struct EnvoyHandle(usize);
 
 // Error Codes
 const SUCCESS: c_int = 0;
@@ -62,6 +68,8 @@ pub(crate) struct GlobalRegistry {
     /// Envoys waiting to be sent to the foreign jurisdiction (outbox).
     /// For this FFI demo, we use this to store messages FROM Rust TO C.
     pub(crate) outbox: SegQueue<String>,
+    /// Tracks active pointers given to C to prevent double-free.
+    pub(crate) active_loans: DashSet<usize>,
 }
 
 impl GlobalRegistry {
@@ -69,6 +77,7 @@ impl GlobalRegistry {
         Self {
             incoming_envoys: SegQueue::new(),
             outbox: SegQueue::new(),
+            active_loans: DashSet::new(),
         }
     }
 }
@@ -208,7 +217,12 @@ pub extern "C" fn receive_envoy() -> *mut c_char {
 
     match msg {
         Some(s) => match CString::new(s) {
-            Ok(c_str) => c_str.into_raw(),
+            Ok(c_str) => {
+                let ptr = c_str.into_raw();
+                // Register the pointer as active
+                registry.active_loans.insert(ptr as usize);
+                ptr
+            },
             Err(_) => std::ptr::null_mut(),
         },
         None => std::ptr::null_mut(),
@@ -225,9 +239,29 @@ pub unsafe extern "C" fn free_envoy(envoy: *mut c_char) {
     if envoy.is_null() {
         return;
     }
-    // Retake ownership to drop it
-    unsafe {
-        let _ = CString::from_raw(envoy);
+
+    let registry = match REGISTRY.get() {
+        Some(r) => r,
+        None => return, // Should not happen if we gave out a pointer
+    };
+
+    let ptr_val = envoy as usize;
+
+    // Check if we actually loaned this pointer
+    if registry.active_loans.remove(&ptr_val).is_some() {
+        // Safe to free: we created it and haven't freed it yet
+        // Retake ownership to drop it
+        unsafe {
+            let _ = CString::from_raw(envoy);
+        }
+    } else {
+        // Double free or invalid pointer!
+        // We log error and DO NOT attempt to free, preventing segfault/heap corruption.
+        tracing::error!(
+            event = "ffi_violation",
+            ptr = ?envoy,
+            "Attempted to free invalid or already freed envoy pointer"
+        );
     }
 }
 

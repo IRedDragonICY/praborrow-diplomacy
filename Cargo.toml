@@ -13,3 +13,4 @@ categories = ["api-bindings", "external-ffi-bindings"]
 tracing = { workspace = true }
 crossbeam-queue = "0.3"
 thiserror = { workspace = true }
+dashmap = "6.1.0"
