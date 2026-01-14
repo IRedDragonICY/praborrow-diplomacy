@@ -161,12 +161,12 @@ pub unsafe extern "C" fn send_envoy(id: u32, payload: *const c_char) -> c_int {
     // ...
 
     if payload.is_null() {
-        tracing::error!("Received NULL payload");
+        tracing::error!(envoy_id = id, "Received NULL payload");
         return ERR_NULL_PTR;
     }
 
     if id == 0 {
-        tracing::error!("Received Invalid ID 0");
+        tracing::error!(envoy_id = 0, "Received Invalid ID 0");
         return ERR_INVALID_ID;
     }
 
@@ -180,11 +180,11 @@ pub unsafe extern "C" fn send_envoy(id: u32, payload: *const c_char) -> c_int {
     let r_str = match r_str_result {
         Ok(Ok(s)) => s,
         Ok(Err(_)) => {
-            tracing::error!("Invalid UTF-8 in payload");
+            tracing::error!(envoy_id = id, "Invalid UTF-8 in payload");
             return ERR_INVALID_UTF8;
         } // UTF-8 error
         Err(_) => {
-            tracing::error!("Panic caught across FFI boundary");
+            tracing::error!(envoy_id = id, "Panic caught across FFI boundary");
             return ERR_PANIC;
         } // Panic occurred
     };
